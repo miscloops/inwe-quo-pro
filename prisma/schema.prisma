@@ -1,0 +1,26 @@
+// Minimal schema — not used for production logic. The panel authenticates
+// against chat.inweapp.com directly; sessions are kept in-memory on the server.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model InweSession {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  // We don't store the password — only the session cookie + auth token we got back from /login
+  cookie       String
+  authToken    String?
+  level        Int?
+  pointPct     Float?
+  hoursLeft    Int?
+  referred     Int?
+  status       String   @default("active") // "active" | "expired" | "error"
+  lastChecked  DateTime @default(now())
+  createdAt    DateTime @default(now())
+}
