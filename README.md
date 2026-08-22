@@ -8,7 +8,7 @@ A multi-account gifting panel for **chat.inweapp.com**. Users paste their iNwe
 credentials (id/password), the panel logs them in, scrapes their level progress
 from `/explore/level_progress`, and runs an auto-gifting bot that sends 3-cent
 gifts (neko, ganja, fly, muri, best wishes) round-robin to all other logged-in
-IDs in chatroom "QUO PRO" (room ID 42081) every 4 seconds.
+IDs in chatroom "QUO PRO" (room ID 4xxx) every 4 seconds.
 
 ## Tech stack
 
@@ -97,7 +97,7 @@ Open `http://localhost:3000` in your browser.
    - The panel calls `/api/inwe/auto-gift` with `action: 'start'`
    - The API fetches fresh auth-tokens from the DB and POSTs to the gift-bot service
    - The gift-bot (port 3001) connects each user to `socket.inweapp.com` via Socket.IO
-   - Each user emits `join_room { room_id: "42081" }` to enter room "QUO PRO"
+   - Each user emits `join_room { room_id: "4XXXX" }` to enter room "QUO PRO"
    - The bot cycles through 5 gift commands every 4 seconds:
      - `/gift <recipient> neko`
      - `/gift <recipient> ganja`
