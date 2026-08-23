@@ -2,7 +2,8 @@
 // against chat.inweapp.com directly; sessions are kept in-memory on the server.
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x"]
 }
 
 datasource db {
