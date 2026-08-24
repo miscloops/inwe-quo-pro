@@ -3,6 +3,7 @@ main = ".open-next/worker.js"
 compatibility_date = "2026-08-23"
 compatibility_flags = ["nodejs_compat"]
 
+
 [[d1_databases]]
 binding = "DB"
 database_name = "inwe-quo-pro"
