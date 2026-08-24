@@ -9,4 +9,4 @@ pages_build_output_dir = ".open-next"
 [[d1_databases]]
 binding = "DB"
 database_name = "inwe-quo-pro"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "1e1cde62-9f82-4b25-84b3-eb320d83ab81"
