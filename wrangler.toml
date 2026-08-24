@@ -1,0 +1,12 @@
+name = "inwe-quo-pro"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# OpenNext / @cloudflare/next-on-pages configuration
+pages_build_output_dir = ".open-next"
+
+# D1 database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "inwe-quo-pro"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
