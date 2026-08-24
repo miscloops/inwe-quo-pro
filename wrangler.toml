@@ -1,9 +1,7 @@
 name = "inwe-quo-pro"
+main = ".open-next/worker.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
-
-# OpenNext / @cloudflare/next-on-pages configuration
-pages_build_output_dir = ".open-next"
 
 # D1 database binding
 [[d1_databases]]
