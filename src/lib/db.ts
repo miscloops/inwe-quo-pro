@@ -37,10 +37,11 @@ export interface InweSessionInput {
 // dev where the package isn't installed.
 async function getD1(): Promise<any | null> {
   // 1) Try OpenNext adapter (Workers deployment)
+  //    NOTE: { async: true } is REQUIRED for async route handlers in OpenNext
   try {
     // @ts-expect-error — this package only exists in the OpenNext/Cloudflare build
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const ctx = getCloudflareContext()
+    const ctx = getCloudflareContext({ async: true })
     if (ctx?.env?.DB) return ctx.env.DB
   } catch (e) {
     console.error('[getD1] OpenNext getCloudflareContext failed:', e)
@@ -104,16 +105,26 @@ export const db = {
     return null
   },
 
-  async createUser(username: string, passwordHash: string): Promise<void> {
+  async createUser(username: string, passwordHash: string, email?: string): Promise<void> {
     const d1 = await getD1()
     if (d1) {
       try {
+        // Try with all known columns (email + created_at)
         await d1.prepare(
-          'INSERT INTO users (username, password_hash) VALUES (?, ?)'
-        ).bind(username, passwordHash).run()
-      } catch (e) {
-        console.error('[createUser] D1 insert failed:', e)
-        throw e
+          'INSERT INTO users (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)'
+        ).bind(username, passwordHash, email ?? '', new Date().toISOString()).run()
+      } catch (e: any) {
+        const msg = String(e?.message || e)
+        console.error('[createUser] D1 insert (full) failed:', msg)
+        // Retry without email and created_at
+        try {
+          await d1.prepare(
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)'
+          ).bind(username, passwordHash).run()
+        } catch (e2: any) {
+          console.error('[createUser] D1 insert (minimal) also failed:', String(e2?.message || e2))
+          throw e2
+        }
       }
     } else {
       throw new Error('Database not available — cannot create user')
