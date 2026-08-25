@@ -102,7 +102,8 @@ export const db = {
     if (d1) {
       try {
         const row = await d1.prepare('SELECT * FROM users WHERE username = ?').bind(username).first()
-        return row || null
+        if (!row) return null
+        return row as any
       } catch (e) {
         console.error('[findUser] D1 query failed:', e)
         throw e
@@ -119,28 +120,48 @@ export const db = {
   async createUser(username: string, passwordHash: string, email?: string): Promise<void> {
     const d1 = await getD1()
     if (d1) {
+      // First check if user already exists
+      const existing = await d1.prepare('SELECT username FROM users WHERE username = ?').bind(username).first()
+      if (existing) {
+        throw new Error('Username already taken')
+      }
+
+      // Detect which columns the users table actually has
+      const schemaResult = await d1.prepare("PRAGMA table_info(users)").all()
+      const columns = (schemaResult.results || []).map((r: any) => r.name)
+      const hasEmail = columns.includes('email')
+      const hasCreatedAt = columns.includes('created_at')
+      const hasId = columns.includes('id')
+      const idIsText = hasId && (schemaResult.results || []).find((r: any) => r.name === 'id')?.type?.toUpperCase()?.includes('TEXT')
+
+      // Build the INSERT based on actual schema
+      const cols: string[] = []
+      const vals: string[] = []
+      const binds: any[] = []
+
+      if (idIsText) {
+        cols.push('id')
+        vals.push('?')
+        binds.push(crypto.randomUUID())
+      }
+      cols.push('username'); vals.push('?'); binds.push(username)
+      cols.push('password_hash'); vals.push('?'); binds.push(passwordHash)
+      if (hasEmail) { cols.push('email'); vals.push('?'); binds.push(email ?? '') }
+      if (hasCreatedAt) { cols.push('created_at'); vals.push('?'); binds.push(new Date().toISOString()) }
+
+      const sql = `INSERT INTO users (${cols.join(', ')}) VALUES (${vals.join(', ')})`
+      console.log('[createUser] INSERT:', sql, 'binds:', JSON.stringify(binds))
+
       try {
-        // Try with all known columns (email + created_at)
-        await d1.prepare(
-          'INSERT INTO users (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)'
-        ).bind(username, passwordHash, email ?? '', new Date().toISOString()).run()
+        await d1.prepare(sql).bind(...binds).run()
       } catch (e: any) {
         const msg = String(e?.message || e)
-        console.error('[createUser] D1 insert (full) failed:', msg)
-        // Retry without email and created_at
-        try {
-          await d1.prepare(
-            'INSERT INTO users (username, password_hash) VALUES (?, ?)'
-          ).bind(username, passwordHash).run()
-        } catch (e2: any) {
-          console.error('[createUser] D1 insert (minimal) also failed:', String(e2?.message || e2))
-          throw e2
-        }
+        console.error('[createUser] D1 insert failed:', msg)
+        throw new Error(`Database error: ${msg}`)
       }
     } else {
       throw new Error('Database not available — cannot create user')
     }
-    // Local dev: nothing to persist — the in-memory store doesn't store password hashes
   },
 
   // ── Session management ─────────────────────────────────────────────
