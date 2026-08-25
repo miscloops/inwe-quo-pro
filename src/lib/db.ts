@@ -1,5 +1,10 @@
 // Cloudflare D1 database access layer.
-// Works with @opennextjs/cloudflare (Workers) and local dev.
+// Replaces the previous Prisma client. On Cloudflare Workers (via OpenNext /
+// @opennextjs/cloudflare), D1 is accessed through getCloudflareContext().env.DB.
+// Falls back to @cloudflare/next-on-pages getRequestContext() for Pages deployments.
+//
+// During local `bun run dev` (non-Cloudflare), we fall back to an in-memory
+// Map so the app still runs for development/testing.
 
 export interface InweSessionRow {
   id: string
@@ -27,36 +32,71 @@ export interface InweSessionInput {
 }
 
 // ---- D1 binding access ----
-// @opennextjs/cloudflare uses getCloudflareContext({ async: true })
-// The { async: true } option is REQUIRED in API route handlers and server actions.
+// On Cloudflare Workers (via @opennextjs/cloudflare), getCloudflareContext()
+// gives us the env bindings. We use a dynamic import to avoid breaking local
+// dev where the package isn't installed.
 async function getD1(): Promise<any | null> {
+  // 1) Try OpenNext adapter (Workers deployment)
   try {
+    // @ts-expect-error — this package only exists in the OpenNext/Cloudflare build
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const ctx = await getCloudflareContext({ async: true })
+    const ctx = getCloudflareContext()
     if (ctx?.env?.DB) return ctx.env.DB
-  } catch {}
+  } catch (e) {
+    console.error('[getD1] OpenNext getCloudflareContext failed:', e)
+  }
+
+  // 2) Fallback: legacy @cloudflare/next-on-pages (Pages deployment)
+  try {
+    // @ts-expect-error — this package only exists in the Cloudflare Pages build
+    const { getRequestContext } = await import('@cloudflare/next-on-pages')
+    const ctx = getRequestContext()
+    if (ctx?.env?.DB) return ctx.env.DB
+  } catch (e) {
+    console.error('[getD1] next-on-pages getRequestContext failed:', e)
+  }
+
+  // 3) Fallback: globalThis.env (some Workers setups expose env globally)
+  try {
+    // @ts-expect-error — env may be attached to globalThis in some runtimes
+    const env = globalThis.env
+    if (env?.DB) return env.DB
+  } catch (e) {
+    console.error('[getD1] globalThis.env failed:', e)
+  }
+
+  console.warn('[getD1] No D1 binding found — falling back to in-memory store')
   return null
 }
 
 // ---- In-memory fallback for local dev ----
+// IMPORTANT: Use globalThis so the Map is shared across all module instances
+// (Next.js Turbopack dev mode can load different copies of this module for different routes).
 const globalForDb = globalThis as unknown as { __inweMemStore?: Map<string, InweSessionRow>; __inweMemId?: number }
 if (!globalForDb.__inweMemStore) globalForDb.__inweMemStore = new Map<string, InweSessionRow>()
 if (!globalForDb.__inweMemId) globalForDb.__inweMemId = 0
 const memStore = globalForDb.__inweMemStore
+let memIdCounter = 0
 
 function genId(): string {
   return `sess_${Date.now()}_${globalForDb.__inweMemId!++}`
 }
 
-// ---- Public API ----
+// ---- Public API (mirrors Prisma's InweSession model) ----
 export const db = {
   // ── User registration / login ──────────────────────────────────────
   async findUser(username: string): Promise<{ id: number; username: string; password_hash: string; created_at: string } | null> {
     const d1 = await getD1()
     if (d1) {
-      const row = await d1.prepare('SELECT * FROM users WHERE username = ?').bind(username).first()
-      return row || null
+      try {
+        const row = await d1.prepare('SELECT * FROM users WHERE username = ?').bind(username).first()
+        return row || null
+      } catch (e) {
+        console.error('[findUser] D1 query failed:', e)
+        throw e
+      }
     }
+    // Local dev fallback — not persisted, but allows testing
     const session = memStore.get(username)
     if (session) {
       return { id: 0, username: session.username, password_hash: '', created_at: session.createdAt }
@@ -67,16 +107,25 @@ export const db = {
   async createUser(username: string, passwordHash: string): Promise<void> {
     const d1 = await getD1()
     if (d1) {
-      await d1.prepare(
-        'INSERT INTO users (username, password_hash) VALUES (?, ?)'
-      ).bind(username, passwordHash).run()
+      try {
+        await d1.prepare(
+          'INSERT INTO users (username, password_hash) VALUES (?, ?)'
+        ).bind(username, passwordHash).run()
+      } catch (e) {
+        console.error('[createUser] D1 insert failed:', e)
+        throw e
+      }
+    } else {
+      throw new Error('Database not available — cannot create user')
     }
+    // Local dev: nothing to persist — the in-memory store doesn't store password hashes
   },
 
   // ── Session management ─────────────────────────────────────────────
   async upsert(username: string, update: Partial<InweSessionInput>, create: InweSessionInput): Promise<InweSessionRow> {
     const d1 = await getD1()
     if (d1) {
+      // Check existing
       const existing = await d1.prepare('SELECT * FROM InweSession WHERE username = ?').bind(username).first()
       if (existing) {
         await d1.prepare(
@@ -105,6 +154,7 @@ export const db = {
         return this.findUnique(username)!
       }
     } else {
+      // In-memory fallback
       let row = memStore.get(username)
       if (row) {
         row = { ...row, ...update, lastChecked: new Date().toISOString() }
