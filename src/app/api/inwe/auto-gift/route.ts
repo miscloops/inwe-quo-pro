@@ -1,7 +1,7 @@
 // POST /api/inwe/auto-gift
 // Joins room 42081 via Socket.IO (polling), then sends /gift via REST /send_message.
-// The room join is required — REST /send_message returns "You are not in this room"
-// if the sender hasn't joined.
+// Gifting Guard: skips IDs at 100% progress, switches to next recipient automatically.
+// Bot only stops when ALL recipients are at 100%.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
@@ -12,7 +12,7 @@ const BASE = 'https://chat.inweapp.com'
 const UA = 'Mozilla/5.0 (compatible; InweGiftingPanel/1.0)'
 const ROOM_ID = '42081'
 const ROOM_NAME = 'QUO PRO'
-const GUARD_THRESHOLD = 99
+const GUARD_THRESHOLD = 100
 
 const botState = {
   running: false,
@@ -21,7 +21,7 @@ const botState = {
   log: [] as { ts: string; kind: string; msg: string }[],
   giftIdx: 0,
   recipientIdx: 0,
-  roomJoined: false,  // has the sender joined the room this session?
+  roomJoined: false,
 }
 
 function botLog(kind: string, msg: string) {
@@ -75,6 +75,25 @@ async function sendGiftViaRest(sender: string, giftName: string, recipient: stri
   return { ok: true }
 }
 
+async function findNextUnguardedRecipient(
+  recipients: string[],
+  startIndex: number,
+): Promise<{ recipient: string | null; allGuarded: boolean; skipped: string[] }> {
+  const skipped: string[] = []
+  for (let i = 0; i < recipients.length; i++) {
+    const idx = (startIndex + i) % recipients.length
+    const recipient = recipients[idx]
+    const recipientSession = await db.findUnique(recipient)
+    if (recipientSession?.pointPct != null && recipientSession.pointPct >= GUARD_THRESHOLD) {
+      skipped.push(recipient)
+      continue
+    }
+    botState.recipientIdx = (idx + 1) % recipients.length
+    return { recipient, allGuarded: false, skipped }
+  }
+  return { recipient: null, allGuarded: true, skipped }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const { action, sender, gifts, usernames, password, force_relogin } = body as {
@@ -97,7 +116,6 @@ export async function POST(req: NextRequest) {
     if (!sender || !gifts?.length || !usernames?.length)
       return NextResponse.json({ ok: false, error: 'sender, gifts, usernames required' }, { status: 400 })
 
-    // Reset on first call (when password is provided)
     if (password !== undefined) {
       botState.running = false; botState.joined = []; botState.failed = []; botState.log = []
       botState.giftIdx = 0; botState.recipientIdx = 0; botState.roomJoined = false
@@ -105,10 +123,8 @@ export async function POST(req: NextRequest) {
 
     botLog('info', `▶ Starting gift bot — sender: ${sender}, room: "${ROOM_NAME}" (${ROOM_ID})`)
 
-    // --- Verify sender has a session ---
     const senderSession = await db.findUnique(sender)
     if (!senderSession || !senderSession.authToken) {
-      // No session — try re-login with provided password
       if (password) {
         botLog('info', `No session for ${sender} — re-logging in...`)
         try {
@@ -138,7 +154,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, status: 'failed', message: `Sender has no valid session`, joined: [], failed: [sender], log: botState.log })
     }
 
-    // Get recipients
     const allSessions = await db.findMany(usernames)
     const recipients = allSessions.filter(s => s.username !== sender).map(s => s.username)
     if (recipients.length === 0) {
@@ -147,16 +162,14 @@ export async function POST(req: NextRequest) {
     }
 
     botLog('info', `Recipients: ${recipients.join(', ')}`)
-    botLog('guard', `Gifting Guard: ACTIVE — skip IDs at ≥${GUARD_THRESHOLD}%`)
+    botLog('guard', `Gifting Guard: ACTIVE — skip IDs at ≥${GUARD_THRESHOLD}% (switch to next recipient)`)
 
-    // --- Step 1: Join the room via Socket.IO (once per session) ---
     if (!botState.roomJoined) {
       botLog('info', `Joining room "${ROOM_NAME}" via Socket.IO...`)
       const joinResult = await joinRoomViaPolling(sender, freshSession.authToken)
       for (const entry of joinResult.log) botState.log.push(entry)
 
       if (!joinResult.ok) {
-        // Join failed — try re-login + retry
         if (password) {
           botLog('info', `Room join failed — re-logging in ${sender} and retrying...`)
           try {
@@ -167,71 +180,60 @@ export async function POST(req: NextRequest) {
             const relResult = await safeJson(r)
             if (relResult.ok && relResult.data?.ok) {
               botLog('success', `${sender}: re-login successful`)
-              // Get fresh session
               const freshSession2 = await db.findUnique(sender)
               if (freshSession2?.authToken) {
                 botLog('info', `Retrying room join...`)
                 const retryResult = await joinRoomViaPolling(sender, freshSession2.authToken)
                 for (const entry of retryResult.log) botState.log.push(entry)
                 if (retryResult.ok) {
-                  botState.roomJoined = true
-                  botState.joined.push(sender)
+                  botState.roomJoined = true; botState.joined.push(sender)
                   botLog('success', `✓ Entered to Quo Pro.. — ${sender} joined room`)
                 } else {
                   botLog('error', `✗ Retry also failed: ${retryResult.error}`)
-                  return NextResponse.json({
-                    ok: true, status: 'failed',
-                    message: `Failed to enter chatroom — ${retryResult.error}`,
-                    joined: [], failed: [sender], log: botState.log,
-                  })
+                  return NextResponse.json({ ok: true, status: 'failed', message: `Failed to enter chatroom — ${retryResult.error}`, joined: [], failed: [sender], log: botState.log })
                 }
               }
             } else {
               botLog('error', `Re-login failed: ${relResult.data?.error ?? relResult.error}`)
-              return NextResponse.json({
-                ok: true, status: 'failed',
-                message: `Failed to enter chatroom — ${joinResult.error}`,
-                joined: [], failed: [sender], log: botState.log,
-              })
+              return NextResponse.json({ ok: true, status: 'failed', message: `Failed to enter chatroom — ${joinResult.error}`, joined: [], failed: [sender], log: botState.log })
             }
           } catch (e) {
             botLog('error', `Re-login error: ${e instanceof Error ? e.message : String(e)}`)
-            return NextResponse.json({
-              ok: true, status: 'failed',
-              message: `Failed to enter chatroom — ${joinResult.error}`,
-              joined: [], failed: [sender], log: botState.log,
-            })
+            return NextResponse.json({ ok: true, status: 'failed', message: `Failed to enter chatroom — ${joinResult.error}`, joined: [], failed: [sender], log: botState.log })
           }
         } else {
           botLog('error', `✗ Failed to enter chatroom: ${joinResult.error}`)
-          return NextResponse.json({
-            ok: true, status: 'failed',
-            message: `Failed to enter chatroom — ${joinResult.error}`,
-            joined: [], failed: [sender], log: botState.log,
-          })
+          return NextResponse.json({ ok: true, status: 'failed', message: `Failed to enter chatroom — ${joinResult.error}`, joined: [], failed: [sender], log: botState.log })
         }
       } else {
-        botState.roomJoined = true
-        botState.joined.push(sender)
+        botState.roomJoined = true; botState.joined.push(sender)
         botLog('success', `✓ Entered to Quo Pro.. — ${sender} joined room`)
       }
     }
 
-    // --- Step 2: Pick next gift + recipient (round-robin) ---
-    const gift = gifts[botState.giftIdx % gifts.length]
-    const recipient = recipients[botState.recipientIdx % recipients.length]
-    botState.giftIdx = (botState.giftIdx + 1) % gifts.length
-    botState.recipientIdx = (botState.recipientIdx + 1) % recipients.length
+    // Find next unguarded recipient (skip 100% IDs)
+    const findResult = await findNextUnguardedRecipient(recipients, botState.recipientIdx)
 
-    // --- Gifting Guard ---
-    const recipientSession = await db.findUnique(recipient)
-    if (recipientSession?.pointPct != null && recipientSession.pointPct >= GUARD_THRESHOLD) {
-      botLog('skip', `SKIP ${recipient} — at ${recipientSession.pointPct.toFixed(1)}% (guarded)`)
-      botState.running = true
-      return NextResponse.json({ ok: true, status: 'joined', message: `Gifting active (${recipient} guarded)`, joined: botState.joined, failed: [], log: botState.log })
+    for (const skipped of findResult.skipped) {
+      const skipSession = await db.findUnique(skipped)
+      const pct = skipSession?.pointPct ?? 0
+      botLog('skip', `SKIP ${skipped} — at ${pct.toFixed(1)}% (≥${GUARD_THRESHOLD}%, switching to next recipient)`)
     }
 
-    // --- Step 3: Send the gift via REST ---
+    if (findResult.allGuarded) {
+      botLog('success', `✓ All recipients at ${GUARD_THRESHOLD}% — bot waiting for level-ups (progress auto-refreshes every 60s)`)
+      botState.running = true
+      return NextResponse.json({
+        ok: true, status: 'all_guarded',
+        message: `All recipients at ${GUARD_THRESHOLD}% — waiting for level-ups`,
+        joined: botState.joined, failed: [], log: botState.log,
+      })
+    }
+
+    const recipient = findResult.recipient!
+    const gift = gifts[botState.giftIdx % gifts.length]
+    botState.giftIdx = (botState.giftIdx + 1) % gifts.length
+
     const result = await sendGiftViaRest(sender, gift.name, recipient)
     botState.running = true
 
@@ -239,7 +241,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, status: 'joined', message: 'Entered to Quo Pro.. and gifting started', joined: botState.joined, failed: [], log: botState.log })
     } else {
       botLog('error', `✗ Failed: ${result.error}`)
-      // If "not in this room" error, reset roomJoined so next attempt re-joins
       if (result.error?.includes('not in this room') || result.error?.includes('not in room')) {
         botState.roomJoined = false
         botLog('info', 'Room join expired — will re-join on next request')
