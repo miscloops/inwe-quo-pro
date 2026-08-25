@@ -16,6 +16,6 @@ export async function POST(req: NextRequest) {
   const passwordHash = await hashPassword(password)
   const user = await db.findUser(cleanUsername)
   if (!user) return NextResponse.json({ ok: false, error: 'Account not found' }, { status: 404 })
-  if (user.passwordHash !== passwordHash) return NextResponse.json({ ok: false, error: 'Invalid username or password' }, { status: 401 })
+  if (user.password_hash !== passwordHash) return NextResponse.json({ ok: false, error: 'Invalid username or password' }, { status: 401 })
   return NextResponse.json({ ok: true, username: cleanUsername })
 }
