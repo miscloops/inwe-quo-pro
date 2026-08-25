@@ -32,13 +32,20 @@ export interface InweSessionInput {
 }
 
 // ---- D1 binding access ----
-// On Cloudflare Workers (via @opennextjs/cloudflare), getCloudflareContext()
-// gives us the env bindings. We use a dynamic import to avoid breaking local
-// dev where the package isn't installed.
+// On Cloudflare Workers, the recommended way to access bindings is via
+// the `cloudflare:workers` module: `import { env } from 'cloudflare:workers'`.
+// We use dynamic imports with multiple fallbacks for compatibility.
 async function getD1(): Promise<any | null> {
-  // 1) Try OpenNext adapter (Workers deployment)
-  //    getCloudflareContext() returns sync by default.
-  //    With { async: true } it returns a Promise that must be awaited.
+  // 1) Try cloudflare:workers module (recommended for Workers)
+  try {
+    // @ts-expect-error — cloudflare:workers is a Workers runtime module
+    const { env } = await import('cloudflare:workers')
+    if (env?.DB) return env.DB
+  } catch (e) {
+    console.error('[getD1] cloudflare:workers import failed:', e)
+  }
+
+  // 2) Try OpenNext adapter getCloudflareContext()
   try {
     // @ts-expect-error — this package only exists in the OpenNext/Cloudflare build
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
@@ -58,7 +65,7 @@ async function getD1(): Promise<any | null> {
     console.error('[getD1] OpenNext getCloudflareContext failed:', e)
   }
 
-  // 2) Fallback: legacy @cloudflare/next-on-pages (Pages deployment)
+  // 3) Fallback: legacy @cloudflare/next-on-pages (Pages deployment)
   try {
     // @ts-expect-error — this package only exists in the Cloudflare Pages build
     const { getRequestContext } = await import('@cloudflare/next-on-pages')
@@ -68,7 +75,7 @@ async function getD1(): Promise<any | null> {
     console.error('[getD1] next-on-pages getRequestContext failed:', e)
   }
 
-  // 3) Fallback: globalThis.env (some Workers setups expose env globally)
+  // 4) Fallback: globalThis.env (some Workers setups expose env globally)
   try {
     // @ts-expect-error — env may be attached to globalThis in some runtimes
     const env = globalThis.env
@@ -119,49 +126,22 @@ export const db = {
 
   async createUser(username: string, passwordHash: string, email?: string): Promise<void> {
     const d1 = await getD1()
-    if (d1) {
-      // First check if user already exists
-      const existing = await d1.prepare('SELECT username FROM users WHERE username = ?').bind(username).first()
-      if (existing) {
-        throw new Error('Username already taken')
-      }
-
-      // Detect which columns the users table actually has
-      const schemaResult = await d1.prepare("PRAGMA table_info(users)").all()
-      const columns = (schemaResult.results || []).map((r: any) => r.name)
-      const hasEmail = columns.includes('email')
-      const hasCreatedAt = columns.includes('created_at')
-      const hasId = columns.includes('id')
-      const idIsText = hasId && (schemaResult.results || []).find((r: any) => r.name === 'id')?.type?.toUpperCase()?.includes('TEXT')
-
-      // Build the INSERT based on actual schema
-      const cols: string[] = []
-      const vals: string[] = []
-      const binds: any[] = []
-
-      if (idIsText) {
-        cols.push('id')
-        vals.push('?')
-        binds.push(crypto.randomUUID())
-      }
-      cols.push('username'); vals.push('?'); binds.push(username)
-      cols.push('password_hash'); vals.push('?'); binds.push(passwordHash)
-      if (hasEmail) { cols.push('email'); vals.push('?'); binds.push(email ?? '') }
-      if (hasCreatedAt) { cols.push('created_at'); vals.push('?'); binds.push(new Date().toISOString()) }
-
-      const sql = `INSERT INTO users (${cols.join(', ')}) VALUES (${vals.join(', ')})`
-      console.log('[createUser] INSERT:', sql, 'binds:', JSON.stringify(binds))
-
-      try {
-        await d1.prepare(sql).bind(...binds).run()
-      } catch (e: any) {
-        const msg = String(e?.message || e)
-        console.error('[createUser] D1 insert failed:', msg)
-        throw new Error(`Database error: ${msg}`)
-      }
-    } else {
+    if (!d1) {
       throw new Error('Database not available — cannot create user')
     }
+
+    // First check if user already exists
+    const existing = await d1.prepare('SELECT username FROM users WHERE username = ?').bind(username).first()
+    if (existing) {
+      throw new Error('Username already taken')
+    }
+
+    // Use email if provided, otherwise generate a unique placeholder from username
+    const userEmail = email && email.trim() ? email : `${username}@inwe.local`
+
+    await d1.prepare(
+      'INSERT INTO users (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)'
+    ).bind(username, passwordHash, userEmail, new Date().toISOString()).run()
   },
 
   // ── Session management ─────────────────────────────────────────────
