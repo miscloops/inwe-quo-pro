@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 
-export async function GET() {
-  const sessions = await db.findMany()
+export async function GET(req: NextRequest) {
+  const userPin = req.headers.get('x-user-name') ?? undefined
+  const sessions = await db.findMany(undefined, userPin)
   const safe = sessions.map(s => ({
     id: s.id,
     username: s.username,
