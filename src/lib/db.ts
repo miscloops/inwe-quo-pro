@@ -1,5 +1,5 @@
 // Cloudflare D1 database access layer.
-// Works with @opennextjs/cloudflare, @cloudflare/next-on-pages, and local dev.
+// Works with @opennextjs/cloudflare (Workers), @cloudflare/next-on-pages (Pages), and local dev.
 
 export interface InweSessionRow {
   id: string
@@ -27,23 +27,25 @@ export interface InweSessionInput {
 }
 
 // ---- D1 binding access ----
-// Tries multiple adapters in order: @opennextjs/cloudflare, @cloudflare/next-on-pages,
-// and falls back to an in-memory store for local dev.
+// Tries multiple adapters in order:
+//   1. @opennextjs/cloudflare (Workers) — getCloudflareContext() [async]
+//   2. @cloudflare/next-on-pages (Pages) — getRequestContext() [sync]
+//   3. Falls back to null (local dev uses in-memory store)
 async function getD1(): Promise<any | null> {
-  // Method 1: @opennextjs/cloudflare (newer adapter)
+  // Method 1: @opennextjs/cloudflare (Workers)
   try {
-    const { getRequestContext } = await import('@opennextjs/cloudflare')
-    const ctx = getRequestContext()
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
+    const ctx = await getCloudflareContext()
     if (ctx?.env?.DB) return ctx.env.DB
   } catch {}
-  
-  // Method 2: @cloudflare/next-on-pages (older adapter)
+
+  // Method 2: @cloudflare/next-on-pages (Pages)
   try {
     const { getRequestContext } = await import('@cloudflare/next-on-pages')
     const ctx = getRequestContext()
     if (ctx?.env?.DB) return ctx.env.DB
   } catch {}
-  
+
   return null
 }
 
