@@ -1,9 +1,5 @@
 // Cloudflare D1 database access layer.
-// Replaces the previous Prisma client. On Cloudflare Workers (via OpenNext /
-// @cloudflare/next-on-pages), D1 is accessed through getRequestContext().env.DB.
-//
-// During local `bun run dev` (non-Cloudflare), we fall back to an in-memory
-// Map so the app still runs for development/testing.
+// Works with @opennextjs/cloudflare, @cloudflare/next-on-pages, and local dev.
 
 export interface InweSessionRow {
   id: string
@@ -31,28 +27,31 @@ export interface InweSessionInput {
 }
 
 // ---- D1 binding access ----
-// On Cloudflare Workers, getRequestContext() gives us the env bindings.
-// We use a dynamic import to avoid breaking local dev where the package
-// isn't installed.
+// Tries multiple adapters in order: @opennextjs/cloudflare, @cloudflare/next-on-pages,
+// and falls back to an in-memory store for local dev.
 async function getD1(): Promise<any | null> {
+  // Method 1: @opennextjs/cloudflare (newer adapter)
   try {
-    // @ts-expect-error — this package only exists in the Cloudflare/OpenNext build
+    const { getRequestContext } = await import('@opennextjs/cloudflare')
+    const ctx = getRequestContext()
+    if (ctx?.env?.DB) return ctx.env.DB
+  } catch {}
+  
+  // Method 2: @cloudflare/next-on-pages (older adapter)
+  try {
     const { getRequestContext } = await import('@cloudflare/next-on-pages')
     const ctx = getRequestContext()
-    return (ctx.env as any).DB ?? null
-  } catch {
-    return null
-  }
+    if (ctx?.env?.DB) return ctx.env.DB
+  } catch {}
+  
+  return null
 }
 
 // ---- In-memory fallback for local dev ----
-// IMPORTANT: Use globalThis so the Map is shared across all module instances
-// (Next.js Turbopack dev mode can load different copies of this module for different routes).
 const globalForDb = globalThis as unknown as { __inweMemStore?: Map<string, InweSessionRow>; __inweMemId?: number }
 if (!globalForDb.__inweMemStore) globalForDb.__inweMemStore = new Map<string, InweSessionRow>()
 if (!globalForDb.__inweMemId) globalForDb.__inweMemId = 0
 const memStore = globalForDb.__inweMemStore
-let memIdCounter = 0
 
 function genId(): string {
   return `sess_${Date.now()}_${globalForDb.__inweMemId!++}`
@@ -67,7 +66,6 @@ export const db = {
       const row = await d1.prepare('SELECT * FROM users WHERE username = ?').bind(username).first()
       return row || null
     }
-    // Local dev fallback
     const session = memStore.get(username)
     if (session) {
       return { id: 0, username: session.username, password_hash: '', created_at: session.createdAt }
@@ -82,14 +80,12 @@ export const db = {
         'INSERT INTO users (username, password_hash) VALUES (?, ?)'
       ).bind(username, passwordHash).run()
     }
-    // Local dev: nothing to persist
   },
 
   // ── Session management ─────────────────────────────────────────────
   async upsert(username: string, update: Partial<InweSessionInput>, create: InweSessionInput): Promise<InweSessionRow> {
     const d1 = await getD1()
     if (d1) {
-      // Check existing
       const existing = await d1.prepare('SELECT * FROM InweSession WHERE username = ?').bind(username).first()
       if (existing) {
         await d1.prepare(
@@ -118,7 +114,6 @@ export const db = {
         return this.findUnique(username)!
       }
     } else {
-      // In-memory fallback
       let row = memStore.get(username)
       if (row) {
         row = { ...row, ...update, lastChecked: new Date().toISOString() }
