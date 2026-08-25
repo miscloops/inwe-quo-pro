@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from 'sonner'
 import { getUserName } from '@/lib/user-pin'
+import { safeJsonResponse } from '@/lib/safe-json-client'
 
 interface Session { id: string; username: string; status: string; level: number | null; pointPct: number | null; hoursLeft: number | null; referred: number | null; hasAuthToken: boolean; lastChecked: string | null; createdAt: string }
 
@@ -19,8 +20,8 @@ async function fetchBalance(username: string): Promise<number | null> {
       headers: { 'Content-Type': 'application/json', ...(name ? { 'x-user-name': name } : {}) },
       body: JSON.stringify({ action: 'balance', username }),
     })
-    const j = await r.json()
-    if (!r.ok || !j.ok) return null
+    const j = await safeJsonResponse(r)
+    if (!r.ok || !j?.ok) return null
     return typeof j.balance === 'number' ? j.balance : null
   } catch { return null }
 }
@@ -30,8 +31,8 @@ async function refreshProgress(username: string) {
   const r = await fetch(`/api/inwe/level_progress?username=${encodeURIComponent(username)}`, {
     headers: name ? { 'x-user-name': name } : {},
   })
-  const j = await r.json()
-  if (!r.ok || !j.ok) throw new Error(j.error ?? 'Failed')
+  const j = await safeJsonResponse(r)
+  if (!r.ok || !j?.ok) throw new Error(j?.error ?? 'Failed')
   return j
 }
 
@@ -43,7 +44,7 @@ async function logout(username: string) {
     body: JSON.stringify({ username }),
   })
   if (!r.ok) throw new Error('failed')
-  return r.json()
+  return safeJsonResponse(r)
 }
 
 async function logoutAll() {
@@ -54,7 +55,7 @@ async function logoutAll() {
     body: JSON.stringify({ username: '*' }),
   })
   if (!r.ok) throw new Error('failed')
-  return r.json()
+  return safeJsonResponse(r)
 }
 
 interface SessionsListProps {
