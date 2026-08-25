@@ -37,12 +37,23 @@ export interface InweSessionInput {
 // dev where the package isn't installed.
 async function getD1(): Promise<any | null> {
   // 1) Try OpenNext adapter (Workers deployment)
-  //    NOTE: { async: true } is REQUIRED for async route handlers in OpenNext
+  //    getCloudflareContext() returns sync by default.
+  //    With { async: true } it returns a Promise that must be awaited.
   try {
     // @ts-expect-error — this package only exists in the OpenNext/Cloudflare build
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const ctx = getCloudflareContext({ async: true })
-    if (ctx?.env?.DB) return ctx.env.DB
+    
+    // Try sync first (works in most OpenNext setups)
+    try {
+      const ctx = getCloudflareContext()
+      if (ctx?.env?.DB) return ctx.env.DB
+    } catch {}
+
+    // Try async mode (required in some OpenNext versions)
+    try {
+      const ctx = await getCloudflareContext({ async: true })
+      if (ctx?.env?.DB) return ctx.env.DB
+    } catch {}
   } catch (e) {
     console.error('[getD1] OpenNext getCloudflareContext failed:', e)
   }
