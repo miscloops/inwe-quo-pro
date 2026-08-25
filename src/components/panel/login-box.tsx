@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 import { getUserName } from '@/lib/user-pin'
+import { safeJsonResponse } from '@/lib/safe-json-client'
 
 function parseCreds(raw: string): { username: string; password: string }[] {
   const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
@@ -31,8 +32,8 @@ async function loginOne(username: string, password: string) {
     headers: { 'Content-Type': 'application/json', ...(name ? { 'x-user-name': name } : {}) },
     body: JSON.stringify({ username, password }),
   })
-  const j = await r.json()
-  if (!r.ok || !j.ok) throw new Error(j.error ?? `Login failed for ${username}`)
+  const j = await safeJsonResponse(r)
+  if (!r.ok || !j?.ok) throw new Error(j?.error ?? `Login failed for ${username}`)
   return j
 }
 
