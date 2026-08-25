@@ -5,6 +5,10 @@ import { safeJson } from '@/lib/safe-fetch'
 const BASE = 'https://chat.inweapp.com'
 const UA = 'Mozilla/5.0 (compatible; InweGiftingPanel/1.0)'
 
+function getUserPin(req: NextRequest): string {
+  return req.headers.get('x-user-name') ?? 'default'
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const { username, password } = body as { username?: string; password?: string }
@@ -17,7 +21,6 @@ export async function POST(req: NextRequest) {
   const cleanPass = String(password)
 
   try {
-    // 1. Fetch login page for CSRF + session cookie
     const loginPageRes = await fetch(`${BASE}/login`, {
       headers: { 'User-Agent': UA },
       redirect: 'manual',
@@ -33,7 +36,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Failed to fetch login page (CSRF/cookie)' }, { status: 502 })
     }
 
-    // 2. POST /login
     const form = new URLSearchParams()
     form.append('utf8', '✓')
     form.append('authenticity_token', csrf)
@@ -60,7 +62,6 @@ export async function POST(req: NextRequest) {
     const setCookie2 = loginRes.headers.get('set-cookie') ?? ''
     const newCookie = setCookie2.split(';')[0] || sessionCookie
 
-    // Safe JSON parse of login response
     const loginResult = await safeJson(loginRes)
     if (loginResult.ok && loginResult.data?.success === false) {
       return NextResponse.json(
@@ -68,7 +69,6 @@ export async function POST(req: NextRequest) {
         { status: 401 },
       )
     }
-    // If not JSON (e.g., HTML redirect), that's OK — check if cookie changed
     if (!loginResult.ok && !newCookie) {
       return NextResponse.json(
         { ok: false, error: `Login failed — ${loginResult.error}` },
@@ -76,7 +76,6 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // 3. Fetch auth-token from home page
     const homeRes = await fetch(`${BASE}/`, {
       headers: { 'Cookie': newCookie, 'User-Agent': UA },
       redirect: 'manual',
@@ -89,11 +88,11 @@ export async function POST(req: NextRequest) {
       if (m) authToken = m[1]
     }
 
-    // 4. Store session in D1
+    const userPin = getUserPin(req)
     const session = await db.upsert(
       cleanUser,
-      { cookie: newCookie, authToken, status: 'active' },
-      { username: cleanUser, cookie: newCookie, authToken, status: 'active' },
+      { cookie: newCookie, authToken, status: 'active', userPin },
+      { username: cleanUser, cookie: newCookie, authToken, status: 'active', userPin },
     )
 
     return NextResponse.json({
