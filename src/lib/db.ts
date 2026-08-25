@@ -58,8 +58,34 @@ function genId(): string {
   return `sess_${Date.now()}_${globalForDb.__inweMemId!++}`
 }
 
-// ---- Public API (mirrors Prisma's InweSession model) ----
+// ---- Public API ----
 export const db = {
+  // ── User registration / login ──────────────────────────────────────
+  async findUser(username: string): Promise<{ id: number; username: string; password_hash: string; created_at: string } | null> {
+    const d1 = await getD1()
+    if (d1) {
+      const row = await d1.prepare('SELECT * FROM users WHERE username = ?').bind(username).first()
+      return row || null
+    }
+    // Local dev fallback
+    const session = memStore.get(username)
+    if (session) {
+      return { id: 0, username: session.username, password_hash: '', created_at: session.createdAt }
+    }
+    return null
+  },
+
+  async createUser(username: string, passwordHash: string): Promise<void> {
+    const d1 = await getD1()
+    if (d1) {
+      await d1.prepare(
+        'INSERT INTO users (username, password_hash) VALUES (?, ?)'
+      ).bind(username, passwordHash).run()
+    }
+    // Local dev: nothing to persist
+  },
+
+  // ── Session management ─────────────────────────────────────────────
   async upsert(username: string, update: Partial<InweSessionInput>, create: InweSessionInput): Promise<InweSessionRow> {
     const d1 = await getD1()
     if (d1) {
@@ -79,7 +105,7 @@ export const db = {
           update.referred ?? existing.referred,
           username
         ).run()
-        return this.findByUsername(username)!
+        return this.findUnique(username)!
       } else {
         const id = genId()
         await d1.prepare(
@@ -89,7 +115,7 @@ export const db = {
           create.level ?? null, create.pointPct ?? null, create.hoursLeft ?? null, create.referred ?? null,
           create.status ?? 'active', new Date().toISOString(), new Date().toISOString()
         ).run()
-        return this.findByUsername(username)!
+        return this.findUnique(username)!
       }
     } else {
       // In-memory fallback
